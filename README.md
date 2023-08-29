@@ -6,7 +6,7 @@ Set has four drivers -- base is MFD (mfd-ch347.ko), and on top of it are I2C, GP
 CH347 can also do UART(s), which are handled independently (in parallel to _this_ driver) by either standard USB CDC driver or
 by common W-CH driver for all their UARTs.
 
-JTAG support in handled in userspace via openFPGALoader (open source) or binary driver for OpenOCD released by W-CH.
+JTAG support is handled in userspace via openFPGALoader (open source) or binary driver for OpenOCD released by W-CH.
 
 ## I2C (i2c-ch347.ko)
 Driver behaves as an ordinary I2C master controller, e.g. _i2c-tools_ work with it and it
@@ -32,5 +32,5 @@ decrease frequency when adding slave devices.
 
 To add a slave device you should send string containing device driver name, chip select number and optionally frequency into "new_device" file in sysfs directory of the driver.
 ```
-cat "spi-nor 0 15000" > /sys/class/.../spi2/new_device
+echo "spi-nor 0 15000" > /sys/class/.../spi2/new_device
 ```
