@@ -480,7 +480,7 @@ static int ch347_spi_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static struct platform_driver ch347_i2c_driver = {
+static struct platform_driver ch347_spi_driver = {
 	.driver.name	= "ch347-spi",
 	.probe		= ch347_spi_probe,
 	.remove	= ch347_spi_remove,
