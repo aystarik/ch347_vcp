@@ -198,6 +198,7 @@ static int ch347_i2c_probe(struct platform_device *pdev)
 	ch347->adapter.owner = THIS_MODULE;
 	ch347->adapter.class = I2C_CLASS_HWMON;
 	ch347->adapter.algo = &ch347_i2c_usb_algorithm;
+	ch347->adapter.dev.parent = dev;
 	i2c_set_adapdata(&ch347->adapter, ch347);
 	snprintf(ch347->adapter.name, sizeof(ch347->adapter.name), "%s-%s", "ch347-i2c", dev_name(pdev->dev.parent));
 	platform_set_drvdata(pdev, ch347);
