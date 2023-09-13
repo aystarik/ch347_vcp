@@ -200,6 +200,13 @@ static int ch347_i2c_probe(struct platform_device *pdev)
 	ch347->adapter.algo = &ch347_i2c_usb_algorithm;
 	ch347->adapter.dev.parent = dev;
 	i2c_set_adapdata(&ch347->adapter, ch347);
+	if (ch347_mode3(pdev)) {
+		// force GPIO #3 (SCL) to output high
+		ch347->obuf[0] = 0xcc;
+		ch347->obuf[1] = 8;
+		ch347->obuf[3 + 3] = 0xf8;
+		ch347_xfer(pdev, ch347->obuf, 11, NULL, 0);
+	}
 	snprintf(ch347->adapter.name, sizeof(ch347->adapter.name), "%s-%s", "ch347-i2c", dev_name(pdev->dev.parent));
 	platform_set_drvdata(pdev, ch347);
 

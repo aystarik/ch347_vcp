@@ -29,6 +29,7 @@ struct ch347_dev {
 	struct usb_interface *interface;
 	u8 ep_in;
 	u8 ep_out;
+	bool mode3;
 };
 
 static const struct mfd_cell ch347_devs[] = {
@@ -74,6 +75,13 @@ int ch347_xfer(struct platform_device *pdev,
 }
 EXPORT_SYMBOL(ch347_xfer);
 
+bool ch347_mode3(struct platform_device *pdev)
+{
+	struct ch347_dev *ch347 = dev_get_drvdata(pdev->dev.parent);
+	return ch347->mode3;
+}
+EXPORT_SYMBOL(ch347_mode3);
+
 static void ch347_disconnect(struct usb_interface *interface)
 {
 	struct ch347_dev *ch347 = usb_get_intfdata(interface);
@@ -113,8 +121,8 @@ static int ch347_probe(struct usb_interface *interface, const struct usb_device_
 	ch347->usb_dev = usb_get_dev(interface_to_usbdev(interface));
 	ch347->interface = interface;
 	usb_set_intfdata(interface, ch347);
-
-	ret = mfd_add_hotplug_devices(dev, ch347_devs, (usb_id->idProduct == CH347_USB_DEVICE_M3) ? 2 : 3);
+	ch347->mode3 = usb_id->idProduct == CH347_USB_DEVICE_M3;
+	ret = mfd_add_hotplug_devices(dev, ch347_devs, ch347->mode3 ? 2 : 3);
 	if (ret != 0) {
 		dev_err(dev, "failed to add mfd devices to core\n");
 		goto out_free;
