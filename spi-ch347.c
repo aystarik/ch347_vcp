@@ -17,6 +17,7 @@
 
 const unsigned MAX_SPI_SPEED = 60*1000*1000; //HZ
 const unsigned MIN_SPI_SPEED = MAX_SPI_SPEED >> 7;
+const unsigned MAX_XFER = 500;
 
 enum CH347_SPI_DIR {
 	SPI_DIR_2LINES_FULLDUPLEX = 0, // default
@@ -160,7 +161,7 @@ static int ch347_spi_write(struct ch347_spi *ch347, const u8 *tx_data, u16 data_
 	unsigned len, remaining = data_len, offset;
 	ch347->obuf[0] = 0xc4;
 	do {
-		len = (remaining > sizeof(ch347->obuf) - 3) ? sizeof(ch347->obuf) - 3 : remaining;
+		len = remaining > MAX_XFER ? MAX_XFER : remaining;
 		offset = data_len - remaining;
 		ch347->obuf[1] = len;
 		ch347->obuf[2] = len >> 8;
@@ -189,7 +190,7 @@ static int ch347_spi_read(struct ch347_spi *ch347, u8 *rx_data, u32 data_len)
 	if (rv < 0)
 		return rv;
 	do {
-		len = (remaining > sizeof(ch347->ibuf) - 3) ? sizeof(ch347->ibuf) - 3 : remaining;
+		len = remaining > MAX_XFER ? MAX_XFER : remaining;
 		offset = data_len - remaining;
 		rv = ch347_xfer(ch347->pdev, NULL, 0, ch347->ibuf, len + 3);
 		if (rv < 0)
@@ -216,7 +217,7 @@ static int ch347_rdwr(struct ch347_spi *ch347, const u8 *tx_data, u8 *rx_data, u
 		return ch347_spi_write(ch347, tx_data, data_len);
 	}
 	do {
-		len = (remaining > sizeof(ch347->obuf) - 3) ? sizeof(ch347->obuf) - 3 : remaining;
+		len = remaining > MAX_XFER ? MAX_XFER : remaining;
 		offset = data_len - remaining;
 		ch347->obuf[0] = 0xc2;
 		ch347->obuf[1] = len;
