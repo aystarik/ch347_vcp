@@ -27,6 +27,7 @@
 struct ch347_dev {
 	struct usb_device *usb_dev;
 	struct usb_interface *interface;
+	struct mutex lck;
 	u8 ep_in;
 	u8 ep_out;
 	bool mode3;
@@ -48,16 +49,17 @@ int ch347_xfer(struct platform_device *pdev,
 	       const uint8_t *obuf, unsigned obuf_len,
 	       uint8_t *ibuf, unsigned ibuf_len)
 {
-	int ret;
+	int ret = 0;
 	int actual = 0;
 	struct ch347_dev *ch347 = dev_get_drvdata(pdev->dev.parent);
 	//dev_info(&pdev->dev, "ch347_xfer: %p, %d, %p, %d", obuf, obuf_len, ibuf, ibuf_len);
+	mutex_lock(&ch347->lck);
 	if (obuf_len) {
 		ret = usb_bulk_msg(ch347->usb_dev, usb_sndbulkpipe(ch347->usb_dev, ch347->ep_out),
 				   (void *)obuf, obuf_len, &actual, DEFAULT_TIMEOUT);
 		if (ret < 0) {
 			dev_err(&pdev->dev, "send failed");
-			return ret;
+			goto unlock;
 		}
 	}
 	if (ibuf_len) {
@@ -67,9 +69,13 @@ int ch347_xfer(struct platform_device *pdev,
 
 		if (ret < 0) {
 			dev_err(&pdev->dev, "recv failed");
-			return ret;
+			goto unlock;
 		}
 	}
+unlock:
+	mutex_unlock(&ch347->lck);
+	if (ret)
+		return ret;
 	return actual;
 
 }
@@ -120,6 +126,7 @@ static int ch347_probe(struct usb_interface *interface, const struct usb_device_
 	ch347->ep_in = epin->bEndpointAddress;
 	ch347->usb_dev = usb_get_dev(interface_to_usbdev(interface));
 	ch347->interface = interface;
+	mutex_init(&ch347->lck);
 	usb_set_intfdata(interface, ch347);
 	ch347->mode3 = usb_id->idProduct == CH347_USB_DEVICE_M3;
 	ret = mfd_add_hotplug_devices(dev, ch347_devs, ch347->mode3 ? 2 : 3);
