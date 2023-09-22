@@ -1,6 +1,6 @@
 PWD         := $(shell pwd)
 KVERSION    := $(shell uname -r)
-KDIR        ?= /lib/modules/$(KVERSION)/build
+KERNEL_SRC  ?= /lib/modules/$(KVERSION)/build
 
 obj-m += mfd-ch347.o
 obj-m += i2c-ch347.o
@@ -8,6 +8,8 @@ obj-m += gpio-ch347.o
 obj-m += spi-ch347.o
 
 all:
-	make -C $(KDIR) M=$(PWD) modules
+	$(MAKE) -C $(KERNEL_SRC) M=$(PWD) modules
 clean:
-	make -C $(KDIR) M=$(PWD) clean
+	$(MAKE) -C $(KERNEL_SRC) M=$(PWD) clean
+modules_install:
+	$(MAKE) -C $(KERNEL_SRC) M=$(PWD) modules_install
