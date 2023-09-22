@@ -13,8 +13,14 @@
 #include <linux/gpio/driver.h>
 #include <linux/platform_device.h>
 #include <linux/seq_file.h>
+#include <linux/version.h>
 
 #include "ch347.h"
+
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 5, 0))
+#define GPIO_LINE_DIRECTION_IN	1
+#define GPIO_LINE_DIRECTION_OUT	0
+#endif
 
 #define CH347_GPIO_NUM_PINS	8
 
