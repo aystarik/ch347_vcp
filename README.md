@@ -3,7 +3,7 @@ Linux kernel drivers for vendor class protocols of CH347
 
 Set has four drivers -- base is MFD (mfd-ch347.ko), and on top of it are I2C, GPIO and SPI drivers (Modes 1 and 3).
 
-CH347 can also do UART(s), which are handled independently (in parallel to _this_ driver) by either standard USB CDC driver or
+CH347 can also do UART(s), which are handled independently (in parallel to _these_ drivers) by either standard USB CDC driver or
 by common W-CH driver for all their UARTs.
 
 JTAG support is handled in userspace via openFPGALoader (open source) or binary driver for OpenOCD released by W-CH.
