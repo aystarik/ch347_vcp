@@ -38,17 +38,19 @@ enum ch347_speed_t {
 struct ch347_i2c {
 	struct platform_device *pdev;
 	struct i2c_adapter adapter;
+	struct mutex io_mutex;
+
 	uint8_t ibuf[CH347_I2C_BUF_SIZE];
 	uint8_t obuf[CH347_I2C_BUF_SIZE];
 };
 
-int ch347_i2c_read(struct ch347_i2c *ch347, struct i2c_msg *msg)
+static int ch347_i2c_read(struct ch347_i2c *ch347, struct i2c_msg *msg)
 {
 	int byteoffset = 0, bytestoread;
 	int ret = 0;
 	uint8_t *ptr;
-	while (msg->len - byteoffset > 0) {
 
+	while (msg->len - byteoffset > 0) {
 		bytestoread = msg->len - byteoffset;
 		if (bytestoread > CH347_MAX_I2C_XFER)
 			bytestoread = CH347_MAX_I2C_XFER;
@@ -64,16 +66,17 @@ int ch347_i2c_read(struct ch347_i2c *ch347, struct i2c_msg *msg)
 		*ptr++ = CH347_CMD_I2C_STM_STO;
 		*ptr++ = CH347_CMD_I2C_STM_END;
 
-		ret = ch347_xfer(ch347->pdev, ch347->obuf, ptr - ch347->obuf, ch347->ibuf, CH347_I2C_BUF_SIZE);
-		if (ret < 1)
-
-		if (ret != bytestoread + 1)
-			ret = -1;
-		if (ch347->ibuf[0] != 1) // check status for NACK
-			ret = -ETIMEDOUT;
-		if (ret > -1) {
-			memcpy(&msg->buf[byteoffset], &ch347->ibuf[1], bytestoread);
-			byteoffset += bytestoread;
+		ret = ch347_xfer(ch347->pdev, ch347->obuf, ptr - ch347->obuf,
+			ch347->ibuf, bytestoread + 1);
+		if (ret > 0) {
+			if (ret != bytestoread + 1)
+				ret = -1;
+			if (ch347->ibuf[0] != 1)
+				ret = -ETIMEDOUT;
+			if (ret > -1) {
+				memcpy(&msg->buf[byteoffset], &ch347->ibuf[1], bytestoread);
+				byteoffset += bytestoread;
+			}
 		}
 
 		if (ret < 0)
@@ -82,11 +85,12 @@ int ch347_i2c_read(struct ch347_i2c *ch347, struct i2c_msg *msg)
 	return ret;
 }
 
-int ch347_i2c_write(struct ch347_i2c *ch347, struct i2c_msg *msg) {
+static int ch347_i2c_write(struct ch347_i2c *ch347, struct i2c_msg *msg) {
 	unsigned left = msg->len, wlen;
 	uint8_t *ptr = msg->buf, *outptr;
 	int ret = 0, i;
 	bool first = true;
+
 	do {
 		outptr = ch347->obuf;
 		*outptr++ = CH347_CMD_I2C_STREAM;
@@ -108,14 +112,14 @@ int ch347_i2c_write(struct ch347_i2c *ch347, struct i2c_msg *msg) {
 			*outptr++ = CH347_CMD_I2C_STM_STO;
 		}
 		*outptr++ = CH347_CMD_I2C_STM_END;
+		ret = ch347_xfer(ch347->pdev, ch347->obuf, outptr - ch347->obuf,
+			ch347->ibuf, wlen + (first ? 1 : 0));
 		first = false;
-		ret = ch347_xfer(ch347->pdev, ch347->obuf, outptr - ch347->obuf, ch347->ibuf, CH347_I2C_BUF_SIZE);
 		if (ret < 0)
 			return ret;
 		for (i = 0; i < ret; ++i) {
-			if (ch347->ibuf[i] != 1) {
+			if (ch347->ibuf[i] != 1)
 				return -ETIMEDOUT;
-			}
 		}
 	} while (left);
 
@@ -133,7 +137,7 @@ static int ch347_i2c_set_speed(struct ch347_i2c *dev) {
 		return 0;
 	if (speed < CH347_I2C_LOW_SPEED || speed > CH347_I2C_HIGH_SPEED)
 	{
-		dev_err(&dev->pdev->dev, "parameter speed can only have values from 0 to 3");
+		dev_err(&dev->pdev->dev, "%s: Parameter speed can only have values from 0 to 3", __func__);
 		speed = speed_last;
 		return -EINVAL;
 	}
@@ -142,11 +146,10 @@ static int ch347_i2c_set_speed(struct ch347_i2c *dev) {
 	dev->obuf[1] = CH347_CMD_I2C_STM_SET | speed;
 	dev->obuf[2] = CH347_CMD_I2C_STM_END;
 
-	rv = ch347_xfer(dev->pdev, dev->obuf, 3, 0, 0);
-	if (rv < 0) {
-		dev_err(&dev->pdev->dev, "can not set I2C speed");
+	rv = ch347_xfer(dev->pdev, dev->obuf, 3, NULL, 0);
+	if (rv < 0)
 		return rv;
-	}
+
 	speed_last = speed;
 	return 0;
 }
@@ -157,23 +160,36 @@ static int ch347_i2c_xfer(struct i2c_adapter *adapter, struct i2c_msg *msgs, int
 	int ret;
 	int i;
 
+	mutex_lock(&ch347->io_mutex);
+
 	ret = ch347_i2c_set_speed(ch347);
 	if (ret < 0)
-		return ret;
+		goto exit;
+
 	for (i = 0; i < num; ++i) {
 		if (msgs[i].flags & I2C_M_RD) {
 			ret = ch347_i2c_read(ch347, &msgs[i]); // checks for NACK of msg->addr
-			if (ret < 0)
-				return ret;
+			if (ret < 0) {
+				dev_dbg(&ch347->pdev->dev,
+					"%s: Read I2C message %d/%d failed: %d", __func__, i + 1, num, ret);
+				goto exit;
+			}
 			msgs[i].len = ret;
 		} else {
 			ret = ch347_i2c_write(ch347, &msgs[i]);
-			if (ret < 0)
-				return ret;
+			if (ret < 0) {
+				dev_dbg(&ch347->pdev->dev,
+					"%s: Write I2C message %d/%d failed: %d", __func__, i + 1, num, ret);
+				goto exit;
+			}
 		}
 	}
 
-	return num;
+	ret = num;
+
+exit:
+	mutex_unlock(&ch347->io_mutex);
+	return ret;
 }
 
 static u32 ch347_i2c_func(struct i2c_adapter *a)
@@ -191,6 +207,7 @@ static int ch347_i2c_probe(struct platform_device *pdev)
 	struct ch347_i2c *ch347;
 	struct device *dev = &pdev->dev;
 	int rv;
+
 	ch347 = devm_kzalloc(dev, sizeof(*ch347), GFP_KERNEL);
 	if (!ch347)
 		return -ENOMEM;
@@ -200,7 +217,7 @@ static int ch347_i2c_probe(struct platform_device *pdev)
 	ch347->adapter.algo = &ch347_i2c_usb_algorithm;
 	ch347->adapter.dev.parent = dev;
 	i2c_set_adapdata(&ch347->adapter, ch347);
-	if (ch347_mode3(pdev)) {
+	if (ch347_mode(pdev) == CH347_MODE_3) {
 		// force GPIO #3 (SCL) to output high
 		ch347->obuf[0] = 0xcc;
 		ch347->obuf[1] = 8;
@@ -210,12 +227,16 @@ static int ch347_i2c_probe(struct platform_device *pdev)
 	snprintf(ch347->adapter.name, sizeof(ch347->adapter.name), "%s-%s", "ch347-i2c", dev_name(pdev->dev.parent));
 	platform_set_drvdata(pdev, ch347);
 
+	mutex_init(&ch347->io_mutex);
+
 	rv = ch347_i2c_set_speed(ch347);
 	if (rv < 0) {
+		dev_err(&pdev->dev, "%s: Failed to set I2C speed: %d", __func__, rv);
 		return rv;
 	}
 
-	return i2c_add_adapter(&ch347->adapter);
+	rv = i2c_add_adapter(&ch347->adapter);
+	return rv;
 }
 
 static int ch347_i2c_remove(struct platform_device *pdev)
@@ -240,4 +261,4 @@ MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("platform:ch347-i2c");
 
 module_param(speed, int, 0644);
-MODULE_PARM_DESC(speed, " I2C bus speed: 0 (20 kbps), 1 (100 kbps), 2 (400 kbps), 3 (750 kbps): ");
+MODULE_PARM_DESC(speed, "I2C bus speed: 0 (20 kbps), 1 (100 kbps), 2 (400 kbps), 3 (750 kbps)");

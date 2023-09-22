@@ -15,9 +15,31 @@
 
 #include "ch347.h"
 
+#define CH347_CMD_SPI_SET_CFG	0xC0
+#define CH347_CMD_SPI_CS_CTRL	0xC1
+#define CH347_CMD_SPI_OUT_IN	0xC2
+#define CH347_CMD_SPI_IN		0xC3
+#define CH347_CMD_SPI_OUT		0xC4
+#define CH347_CMD_SPI_GET_CFG	0xCA
+
+#define CH347_CS_ASSERT		0x00
+#define CH347_CS_DEASSERT	0x40
+#define CH347_CS_CHANGE		0x80
+#define CH347_CS_IGNORE		0x00
+
+#define IO_BUF_SIZE_RX 510
+#define IO_BUF_SIZE_TX 4096
+
+#define DEFAULT_NUM_CS  2
+
+static int num_cs = DEFAULT_NUM_CS;
+module_param(num_cs, int, 0644);
+MODULE_PARM_DESC(num_cs, "CS num: (1 or 2)");
+
 const unsigned MAX_SPI_SPEED = 60*1000*1000; //HZ
 const unsigned MIN_SPI_SPEED = MAX_SPI_SPEED >> 7;
-const unsigned MAX_XFER = 500;
+const unsigned MAX_XFER_RX = IO_BUF_SIZE_RX - 3;
+const unsigned MAX_XFER_TX = IO_BUF_SIZE_TX - 3;
 
 enum CH347_SPI_DIR {
 	SPI_DIR_2LINES_FULLDUPLEX = 0, // default
@@ -49,10 +71,10 @@ struct ch347_hw_config {
 	uint16_t crc_polynomial; /* polynomial used for the CRC calculation. */
 	uint16_t write_read_interval; /* uS */
 	uint8_t out_default_data;     /* Data to output on MOSI during SPI reading */
-/*
- * Bit 7: CS0 polarity
- * Bit 6: CS1 polarity
- */
+	/*
+	 * Bit 7: CS0 polarity
+	 * Bit 6: CS1 polarity
+	 */
 	uint8_t cs_config;
 	uint8_t reserved[4];
 };
@@ -66,11 +88,12 @@ struct ch347_spi {
 
 	struct ch347_hw_config cfg;
 
-	u8 ibuf[512];
-	u8 obuf[512];
+	struct mutex io_mutex;
+
+	u8 ibuf[IO_BUF_SIZE_RX];
+	u8 obuf[IO_BUF_SIZE_TX];
 
 	u32 speed;
-	u8 cs;
 	u8 mode;
 };
 
@@ -91,11 +114,13 @@ static void set_hw_speed(struct ch347_spi *ch347, unsigned speed) {
 
 static int ch347_get_hw_config(struct ch347_spi *ch347) {
 	int rv;
-	ch347->obuf[0] = 0xca;
+	ch347->obuf[0] = CH347_CMD_SPI_GET_CFG;
 	ch347->obuf[1] = 1;
 	ch347->obuf[2] = 0;
 	ch347->obuf[3] = 1;
-	rv = ch347_xfer(ch347->pdev, ch347->obuf, 4, ch347->ibuf, sizeof(struct ch347_hw_config) + 3);
+
+	rv = ch347_xfer(ch347->pdev, ch347->obuf, 4,
+		ch347->ibuf, sizeof(struct ch347_hw_config) + 3);
 	if (rv < 0)
 		return rv;
 	memcpy(&ch347->cfg, ch347->ibuf + 3, sizeof(struct ch347_hw_config));
@@ -107,26 +132,15 @@ static int ch347_get_hw_config(struct ch347_spi *ch347) {
 
 static int ch347_set_cs(struct ch347_spi *ch347, int cs, bool val) {
 	u8 *ptr = ch347->obuf;
+
 	memset(ptr, 0, 16);
-	*ptr++ = 0xc1;
+	*ptr++ = CH347_CMD_SPI_CS_CTRL;
 	*ptr++ = 10;
 	*ptr++ = 0;
-	ptr[cs ? 5 : 0] = (val) ? 0x80 : 0xc0;
+	ptr[cs ? 5 : 0] = (val)
+		? (CH347_CS_CHANGE | CH347_CS_ASSERT)
+		: (CH347_CS_CHANGE | CH347_CS_DEASSERT);
 	return ch347_xfer(ch347->pdev, ch347->obuf, 13, NULL, 0);
-}
-
-static int ch347_prepare_message(struct spi_master *master,
-				 struct spi_message *message) {
-	int rv;
-	struct ch347_spi *ch347 = spi_master_get_devdata(master);
-	struct spi_device *spi = message->spi;
-	if (ch347->cs != spi->chip_select) {
-		rv = ch347_set_cs(ch347, spi->chip_select, (spi->mode & SPI_CS_HIGH) ? false : true);
-		if (rv < 0)
-			return rv;
-		ch347->cs = spi->chip_select;
-	}
-	return 0;
 }
 
 static int ch347_transfer_setup(struct ch347_spi *ch347, u32 speed, u8 mode) {
@@ -139,17 +153,16 @@ static int ch347_transfer_setup(struct ch347_spi *ch347, u32 speed, u8 mode) {
 	ch347->cfg.polarity = mode & SPI_CPOL;
 	ch347->cfg.first_bit = (mode & SPI_LSB_FIRST) ? 0x80 : 0;
 
-	*ptr++ = 0xc0;
+	*ptr++ = CH347_CMD_SPI_SET_CFG;
 	*ptr++ = sizeof(ch347->cfg);
 	*ptr++ = 0;
 	memcpy(ptr, &ch347->cfg, sizeof(ch347->cfg));
 	rv = ch347_xfer(ch347->pdev, ch347->obuf, 3 + sizeof(ch347->cfg), ch347->ibuf, 4);
-	if (rv < 0) {
-		dev_err(&ch347->pdev->dev, "ch347_xfer failed: %d", rv);
+	if (rv < 0)
 		return rv;
-	}
+
 	if (ch347->ibuf[0] != 0xc0 || ch347->ibuf[3]) {
-		dev_err(&ch347->pdev->dev, "ibuf[0]=%x, ibuf[3] = %d", ch347->ibuf[0], ch347->ibuf[3]);
+		dev_err(&ch347->pdev->dev, "%s: ibuf[0]=%x, ibuf[3]=%d", __func__, ch347->ibuf[0], ch347->ibuf[3]);
 		return -1;
 	}
 	return 0;
@@ -159,17 +172,14 @@ static int ch347_spi_write(struct ch347_spi *ch347, const u8 *tx_data, u16 data_
 {
 	int rv;
 	unsigned len, remaining = data_len, offset;
-	ch347->obuf[0] = 0xc4;
+	ch347->obuf[0] = CH347_CMD_SPI_OUT;
 	do {
-		len = remaining > MAX_XFER ? MAX_XFER : remaining;
+		len = remaining > MAX_XFER_TX ? MAX_XFER_TX : remaining;
 		offset = data_len - remaining;
 		ch347->obuf[1] = len;
 		ch347->obuf[2] = len >> 8;
 		memcpy(ch347->obuf + 3, tx_data + offset, len);
-		rv = ch347_xfer(ch347->pdev, ch347->obuf, len + 3, NULL, 0);
-		if (rv < 0)
-			return rv;
-		rv = ch347_xfer(ch347->pdev, NULL, 0, ch347->ibuf, 4);
+		rv = ch347_xfer(ch347->pdev, ch347->obuf, len + 3, ch347->ibuf, 4);
 		if (rv < 0)
 			return rv;
 		remaining -= len;
@@ -182,21 +192,22 @@ static int ch347_spi_read(struct ch347_spi *ch347, u8 *rx_data, u32 data_len)
 {
 	int rv;
 	unsigned len, remaining = data_len, offset;
-	ch347->obuf[0] = 0xc3;
+
+	ch347->obuf[0] = CH347_CMD_SPI_IN;
 	ch347->obuf[1] = 4;
 	ch347->obuf[2] = 0;
-	memcpy(ch347->obuf + 3, &data_len, 4);
-	rv = ch347_xfer(ch347->pdev, ch347->obuf, 7, NULL, 0);
-	if (rv < 0)
-		return rv;
+
 	do {
-		len = remaining > MAX_XFER ? MAX_XFER : remaining;
+		len = remaining > MAX_XFER_RX ? MAX_XFER_RX : remaining;
 		offset = data_len - remaining;
-		rv = ch347_xfer(ch347->pdev, NULL, 0, ch347->ibuf, len + 3);
+		memcpy(ch347->obuf + 3, &len, 4);
+		rv = ch347_xfer(ch347->pdev, ch347->obuf, 7, ch347->ibuf, len + 3);
 		if (rv < 0)
 			return rv;
-		if (rv != len + 3)
+		if (rv != len + 3) {
+			dev_err(&ch347->pdev->dev, "%s: rv (%d) != len (%u) + 3", __func__, rv, len);
 			return -EINVAL;
+		}
 		memcpy(rx_data + offset, ch347->ibuf + 3, len);
 		remaining -= len;
 	} while (remaining);
@@ -217,49 +228,23 @@ static int ch347_rdwr(struct ch347_spi *ch347, const u8 *tx_data, u8 *rx_data, u
 		return ch347_spi_write(ch347, tx_data, data_len);
 	}
 	do {
-		len = remaining > MAX_XFER ? MAX_XFER : remaining;
+		len = remaining > MAX_XFER_RX ? MAX_XFER_RX : remaining;
 		offset = data_len - remaining;
-		ch347->obuf[0] = 0xc2;
+		ch347->obuf[0] = CH347_CMD_SPI_OUT_IN;
 		ch347->obuf[1] = len;
 		ch347->obuf[2] = len >> 8;
 		memcpy(ch347->obuf + 3, tx_data + offset, len);
 		rv = ch347_xfer(ch347->pdev, ch347->obuf, len + 3, ch347->ibuf, len + 3);
 		if (rv < 0)
 			return rv;
-		if (rv != len + 3)
+
+		if (rv != len + 3) {
+			dev_err(&ch347->pdev->dev, "%s: rv (%d) != len (%u) + 3", __func__, rv, len);
 			return -EINVAL;
+		}
 		memcpy(rx_data + offset, ch347->ibuf + 3, len);
 		remaining -= len;
 	} while (remaining);
-	return 0;
-}
-
-static int ch347_transfer_one(struct spi_master *master,
-			      struct spi_device *spi,
-			      struct spi_transfer *xfer)
-{
-	int rv;
-	struct ch347_spi *ch347 = spi_master_get_devdata(master);
-	//dev_info(&ch347->pdev->dev, "ch347_transfer_one start");
-	if (xfer->speed_hz != ch347->speed || (spi->mode & (SPI_CPHA|SPI_CPOL|SPI_LSB_FIRST)) != ch347->mode) {
-		rv = ch347_transfer_setup(ch347, xfer->speed_hz, spi->mode);
-		if (rv < 0) {
-			dev_err(&ch347->pdev->dev, "can not setup transfer");
-			return rv;
-		}
-		// settings changed, need to reassert chip_select
-		ch347_set_cs(ch347, spi->chip_select, (spi->mode & SPI_CS_HIGH) ? false : true);
-	}
-	rv = ch347_rdwr(ch347, xfer->tx_buf, xfer->rx_buf, xfer->len);
-	if (rv < 0) {
-		dev_err(&ch347->pdev->dev, "write/read failed");
-		return rv;
-	}
-	if (xfer->cs_change || spi_transfer_is_last(master, xfer)) {
-		ch347_set_cs(ch347, spi->chip_select, (spi->mode & SPI_CS_HIGH) ? true : false);
-		ch347->cs = 0xff;
-	}
-	//dev_info(&ch347->pdev->dev, "ch347_transfer_one end");
 	return 0;
 }
 
@@ -268,38 +253,52 @@ static int ch347_transfer_one_message(struct spi_master *master, struct spi_mess
 	struct ch347_spi *ch347 = spi_master_get_devdata(master);
 	struct spi_device *spi = m->spi;
 	struct spi_transfer *xfer = list_first_entry(&m->transfers, struct spi_transfer, transfer_list);
+	unsigned int cs_change = 1;
 	int rv;
-
-	if (xfer->speed_hz != ch347->speed || (spi->mode & (SPI_CPHA|SPI_CPOL|SPI_LSB_FIRST)) != ch347->mode) {
-		rv = ch347_transfer_setup(ch347, xfer->speed_hz, spi->mode);
-		if (rv < 0) {
-			dev_err(&ch347->pdev->dev, "can not setup transfer");
-			return rv;
-		}
-	}
-	if ((spi->mode & SPI_NO_CS) == 0) {
-		ch347_set_cs(ch347, spi->chip_select, (spi->mode & SPI_CS_HIGH) ? false : true);
-	}
 
 	m->status = 0;
 	m->actual_length = 0;
 
-	list_for_each_entry(xfer, &m->transfers, transfer_list) {
-		rv = ch347_rdwr(ch347, xfer->tx_buf, xfer->rx_buf, xfer->len);
+	mutex_lock(&ch347->io_mutex);
+
+	if (xfer->speed_hz != ch347->speed || (spi->mode & (SPI_CPHA|SPI_CPOL|SPI_LSB_FIRST)) != ch347->mode) {
+		rv = ch347_transfer_setup(ch347, xfer->speed_hz, spi->mode);
 		if (rv < 0) {
-			dev_err(&ch347->pdev->dev, "write/read failed");
+			dev_err(&ch347->pdev->dev, "%s: Can not setup transfer: %d", __func__, rv);
 			m->status = rv;
-			return rv;
+			goto msg_done;
 		}
-		m->actual_length += xfer->len;
 	}
 
-	if ((spi->mode & SPI_NO_CS) == 0) {
+	list_for_each_entry(xfer, &m->transfers, transfer_list) {
+		if ((spi->mode & SPI_NO_CS) == 0) {
+			if (cs_change) {
+				ch347_set_cs(ch347, spi->chip_select, (spi->mode & SPI_CS_HIGH) ? false : true);
+			}
+
+			cs_change = xfer->cs_change;
+		}
+
+		rv = ch347_rdwr(ch347, xfer->tx_buf, xfer->rx_buf, xfer->len);
+		if (rv < 0) {
+			dev_err(&ch347->pdev->dev, "%s: Write/read failed: %d", __func__, rv);
+			m->status = rv;
+			goto msg_done;
+		}
+		m->actual_length += xfer->len;
+
+		if (((spi->mode & SPI_NO_CS) == 0) && cs_change) {
+			ch347_set_cs(ch347, spi->chip_select, (spi->mode & SPI_CS_HIGH) ? true : false);
+		}
+	}
+
+	if (((spi->mode & SPI_NO_CS) == 0) && !cs_change) {
 		ch347_set_cs(ch347, spi->chip_select, (spi->mode & SPI_CS_HIGH) ? true : false);
 	}
 
+msg_done:
+	mutex_unlock(&ch347->io_mutex);
 	spi_finalize_current_message(master);
-
 	return 0;
 }
 
@@ -436,24 +435,31 @@ static int ch347_spi_probe(struct platform_device *pdev)
 	ch347->master->dev.of_node = dev->of_node;
 	ch347->pdev = pdev;
 
-	ch347->cs = 0xff;
 	ch347->mode = 0xff;
 	ch347->speed = 0;
 
-	rv = ch347_get_hw_config(ch347);
-	if (rv < 0)
-		return rv;
+	mutex_init(&ch347->io_mutex);
 
-	master->num_chipselect = 2;
+	rv = ch347_get_hw_config(ch347);
+	if (rv < 0) {
+		dev_err(dev, "%s: Failed to get SPI configuration: %d", __func__, rv);
+		return rv;
+	}
+
+	if (num_cs != 1 && num_cs != 2) {
+		dev_err(dev, "%s: Invalid num_cs value %d, using default %d",
+			__func__, num_cs, DEFAULT_NUM_CS);
+		num_cs = DEFAULT_NUM_CS;
+	}
+
+	master->num_chipselect = num_cs;
 	master->min_speed_hz = MIN_SPI_SPEED;
-	master->max_speed_hz = MAX_SPI_SPEED;  
+	master->max_speed_hz = MAX_SPI_SPEED;
 	master->bits_per_word_mask = 0;
 
 	master->bus_num = -1;
 	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_LSB_FIRST; // SPI_CS_HIGH -- possible
 
-	master->prepare_message = ch347_prepare_message;
-	master->transfer_one = ch347_transfer_one;
 	master->transfer_one_message = ch347_transfer_one_message;
 
 	rv = devm_spi_register_master(dev, master);
@@ -461,12 +467,12 @@ static int ch347_spi_probe(struct platform_device *pdev)
 		return rv;
 	rv = device_create_file(&master->dev, &dev_attr_new_device);
 	if (rv) {
-		dev_err(dev, "can not create new_device file");
+		dev_err(dev, "%s: Can not create 'new_device' file: %d", __func__, rv);
 		return rv;
 	}
 	rv = device_create_file(&master->dev, &dev_attr_delete_device);
 	if (rv) {
-		dev_err(dev, "can not create delete_device file");
+		dev_err(dev, "%s: Can not create 'delete_device' file: %d", __func__, rv);
 		return rv;
 	}
 
