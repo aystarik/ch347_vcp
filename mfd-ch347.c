@@ -20,6 +20,7 @@
 #include <linux/delay.h>
 #include <linux/completion.h>
 #include <linux/jiffies.h>
+#include <linux/of_device.h>
 
 #include "ch347.h"
 
@@ -89,9 +90,9 @@ struct ch347_dev {
 };
 
 static const struct mfd_cell ch347_devs[] = {
-	{ .name = "ch347-gpio", },
-	{ .name = "ch347-i2c", },
-	{ .name = "ch347-spi", }, // must be last -- optional
+	{ .name = "ch347-gpio", .of_compatible = "wch,ch347-mfd-gpio" },
+	{ .name = "ch347-i2c",  .of_compatible = "wch,ch347-mfd-i2c" },
+	{ .name = "ch347-spi",  .of_compatible = "wch,ch347-mfd-spi" }
 };
 
 static struct ch347_urb *ch347_urb_alloc(struct ch347_dev *ch347, unsigned size)
