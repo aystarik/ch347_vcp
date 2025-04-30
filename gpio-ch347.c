@@ -203,9 +203,9 @@ static int ch347_gpio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int ch347_gpio_remove(struct platform_device *pdev)
+static void ch347_gpio_remove(struct platform_device *pdev)
 {
-	return 0;
+	return;
 }
 
 static struct platform_driver ch347_gpio_driver = {
