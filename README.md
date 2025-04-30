@@ -31,6 +31,18 @@ Driver adds new SPI master controller with speeds up to 60MHz and 2 slaves. If y
 decrease frequency when adding slave devices.
 
 To add a slave device you should send string containing device driver name, chip select number and optionally frequency into "new_device" file in sysfs directory of the driver.
-```
+```sh
 echo "spi-nor 0 15000" > /sys/class/.../spi2/new_device
 ```
+
+To use the device from userspace, first bind `spidev` driver to the device.
+```sh
+echo "spidev" > /sys/class/spi_master/spi0/spi0.0/driver_override
+echo "spi0.0" > /sys/bus/spi/drivers/spidev/bind
+```
+
+The device is then made available for us.
+```sh
+file /dev/spidev0.0
+```
+> `/dev/spidev0.0: character special (153/0)`
