@@ -302,7 +302,7 @@ msg_done:
 	return 0;
 }
 
-static int add_slave(struct ch347_spi *ch347, struct spi_board_info *board_info)
+static int add_slave(struct ch347_spi *ch347, struct spi_board_info *board_info, uint8_t bits_per_word)
 {
 	unsigned int cs = board_info->chip_select;
 
@@ -320,6 +320,7 @@ static int add_slave(struct ch347_spi *ch347, struct spi_board_info *board_info)
 	if (!ch347->slaves[cs]) {
 		return -ENOMEM;
 	}
+	ch347->slaves[cs]->bits_per_word = bits_per_word;
 	return 0;
 }
 
@@ -339,7 +340,8 @@ static ssize_t new_device_store(struct device *mdev,
 				struct device_attribute *attr,
 				const char *buf, size_t count)
 {
-	unsigned speed = MAX_SPI_SPEED / 1000; // measure speed in kHz 
+	uint8_t bits_per_word = 0;
+	unsigned speed = MAX_SPI_SPEED / 1000; // measure speed in kHz
 	struct ch347_spi *ch347 = dev_get_drvdata(mdev);
 	struct spi_board_info board_info = {
 	    .mode = SPI_MODE_0,
@@ -369,6 +371,24 @@ static ssize_t new_device_store(struct device *mdev,
 		rc = -EINVAL;
 		goto free_req;
 	}
+	rc = kstrtou32(str, 0, &board_info.mode);
+	if (rc)
+		goto free_req;
+
+	str = strsep(&req, " ");
+	if (str == NULL) {
+		rc = -EINVAL;
+		goto free_req;
+	}
+	rc = kstrtou8(str, 0, &bits_per_word);
+	if (rc)
+		goto free_req;
+
+	str = strsep(&req, " ");
+	if (str == NULL) {
+		rc = -EINVAL;
+		goto free_req;
+	}
 	rc = kstrtou16(str, 0, &board_info.chip_select);
 	if (rc)
 		goto free_req;
@@ -381,7 +401,7 @@ static ssize_t new_device_store(struct device *mdev,
 
 	board_info.max_speed_hz = speed * 1000;
 
-	rc = add_slave(ch347, &board_info);
+	rc = add_slave(ch347, &board_info, bits_per_word);
 	if (rc)
 		goto free_req;
 
