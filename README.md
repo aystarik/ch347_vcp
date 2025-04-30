@@ -34,3 +34,15 @@ To add a slave device you should send string containing device driver name, SPI 
 ```
 echo "spi-nor 9 0 0 15000" > /sys/class/.../spi2/new_device
 ```
+
+To use the device from userspace, first bind `spidev` driver to the device.
+```sh
+echo "spidev" > /sys/class/spi_master/spi0/spi0.0/driver_override
+echo "spi0.0" > /sys/bus/spi/drivers/spidev/bind
+```
+
+The device is then made available for us.
+```sh
+file /dev/spidev0.0
+```
+> `/dev/spidev0.0: character special (153/0)`

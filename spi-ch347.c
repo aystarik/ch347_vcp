@@ -82,7 +82,7 @@ struct ch347_hw_config {
 
 struct ch347_spi {
 	struct platform_device *pdev;
-	struct spi_master *master;
+	struct spi_controller *controller;
 
 	struct spi_device *slaves[2];
 
@@ -248,9 +248,9 @@ static int ch347_rdwr(struct ch347_spi *ch347, const u8 *tx_data, u8 *rx_data, u
 	return 0;
 }
 
-static int ch347_transfer_one_message(struct spi_master *master, struct spi_message *m)
+static int ch347_transfer_one_message(struct spi_controller *controller, struct spi_message *m)
 {
-	struct ch347_spi *ch347 = spi_master_get_devdata(master);
+	struct ch347_spi *ch347 = spi_controller_get_devdata(controller);
 	struct spi_device *spi = m->spi;
 	struct spi_transfer *xfer = list_first_entry(&m->transfers, struct spi_transfer, transfer_list);
 	unsigned int cs_change = 1;
@@ -273,7 +273,7 @@ static int ch347_transfer_one_message(struct spi_master *master, struct spi_mess
 	list_for_each_entry(xfer, &m->transfers, transfer_list) {
 		if ((spi->mode & SPI_NO_CS) == 0) {
 			if (cs_change) {
-				ch347_set_cs(ch347, spi->chip_select, (spi->mode & SPI_CS_HIGH) ? false : true);
+				ch347_set_cs(ch347, spi->chip_select[0], (spi->mode & SPI_CS_HIGH) ? false : true);
 			}
 
 			cs_change = xfer->cs_change;
@@ -288,17 +288,17 @@ static int ch347_transfer_one_message(struct spi_master *master, struct spi_mess
 		m->actual_length += xfer->len;
 
 		if (((spi->mode & SPI_NO_CS) == 0) && cs_change) {
-			ch347_set_cs(ch347, spi->chip_select, (spi->mode & SPI_CS_HIGH) ? true : false);
+			ch347_set_cs(ch347, spi->chip_select[0], (spi->mode & SPI_CS_HIGH) ? true : false);
 		}
 	}
 
 	if (((spi->mode & SPI_NO_CS) == 0) && !cs_change) {
-		ch347_set_cs(ch347, spi->chip_select, (spi->mode & SPI_CS_HIGH) ? true : false);
+		ch347_set_cs(ch347, spi->chip_select[0], (spi->mode & SPI_CS_HIGH) ? true : false);
 	}
 
 msg_done:
 	mutex_unlock(&ch347->io_mutex);
-	spi_finalize_current_message(master);
+	spi_finalize_current_message(controller);
 	return 0;
 }
 
@@ -307,16 +307,16 @@ static int add_slave(struct ch347_spi *ch347, struct spi_board_info *board_info,
 	unsigned int cs = board_info->chip_select;
 
 	/* Sanity check */
-	if (cs >= ch347->master->num_chipselect)
+	if (cs >= ch347->controller->num_chipselect)
 		return -EINVAL;
 
-	board_info->bus_num = ch347->master->bus_num;
+	board_info->bus_num = ch347->controller->bus_num;
 
 	if (ch347->slaves[cs] != NULL) {
 		return -EADDRINUSE;
 	}
 
-	ch347->slaves[cs] = spi_new_device(ch347->master, board_info);
+	ch347->slaves[cs] = spi_new_device(ch347->controller, board_info);
 	if (!ch347->slaves[cs]) {
 		return -ENOMEM;
 	}
@@ -326,7 +326,7 @@ static int add_slave(struct ch347_spi *ch347, struct spi_board_info *board_info,
 
 static int remove_slave(struct ch347_spi *ch347, unsigned int cs)
 {
-	if (cs >= ch347->master->num_chipselect)
+	if (cs >= ch347->controller->num_chipselect)
 		return -EINVAL;
 
 	if (ch347->slaves[cs] == NULL)
@@ -440,19 +440,19 @@ static DEVICE_ATTR_WO(delete_device);
 
 static int ch347_spi_probe(struct platform_device *pdev)
 {
-	struct spi_master *master;
+	struct spi_controller *controller;
 	struct ch347_spi *ch347;
 	struct device *dev = &pdev->dev;
 	int rv;
 
-	master = spi_alloc_master(dev, sizeof(struct ch347_spi));
-	if (!master)
+	controller = spi_alloc_host(dev, sizeof(struct ch347_spi));
+	if (!controller)
 		return -ENOMEM;
-	platform_set_drvdata(pdev, master);
-	ch347 = spi_master_get_devdata(master);
+	platform_set_drvdata(pdev, controller);
+	ch347 = spi_controller_get_devdata(controller);
 
-	ch347->master = master;
-	ch347->master->dev.of_node = dev->of_node;
+	ch347->controller = controller;
+	ch347->controller->dev.of_node = dev->of_node;
 	ch347->pdev = pdev;
 
 	ch347->mode = 0xff;
@@ -472,25 +472,25 @@ static int ch347_spi_probe(struct platform_device *pdev)
 		num_cs = DEFAULT_NUM_CS;
 	}
 
-	master->num_chipselect = num_cs;
-	master->min_speed_hz = MIN_SPI_SPEED;
-	master->max_speed_hz = MAX_SPI_SPEED;
-	master->bits_per_word_mask = 0;
+	controller->num_chipselect = num_cs;
+	controller->min_speed_hz = MIN_SPI_SPEED;
+	controller->max_speed_hz = MAX_SPI_SPEED;
+	controller->bits_per_word_mask = 0;
 
-	master->bus_num = -1;
-	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_LSB_FIRST; // SPI_CS_HIGH -- possible
+	controller->bus_num = -1;
+	controller->mode_bits = SPI_CPOL | SPI_CPHA | SPI_LSB_FIRST; // SPI_CS_HIGH -- possible
 
-	master->transfer_one_message = ch347_transfer_one_message;
+	controller->transfer_one_message = ch347_transfer_one_message;
 
-	rv = devm_spi_register_master(dev, master);
+	rv = devm_spi_register_controller(dev, controller);
 	if (rv < 0)
 		return rv;
-	rv = device_create_file(&master->dev, &dev_attr_new_device);
+	rv = device_create_file(&controller->dev, &dev_attr_new_device);
 	if (rv) {
 		dev_err(dev, "%s: Can not create 'new_device' file: %d", __func__, rv);
 		return rv;
 	}
-	rv = device_create_file(&master->dev, &dev_attr_delete_device);
+	rv = device_create_file(&controller->dev, &dev_attr_delete_device);
 	if (rv) {
 		dev_err(dev, "%s: Can not create 'delete_device' file: %d", __func__, rv);
 		return rv;
@@ -499,12 +499,11 @@ static int ch347_spi_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int ch347_spi_remove(struct platform_device *pdev)
+static void ch347_spi_remove(struct platform_device *pdev)
 {
-	struct spi_master *master = platform_get_drvdata(pdev);
-	device_remove_file(&master->dev, &dev_attr_new_device);
-	device_remove_file(&master->dev, &dev_attr_delete_device);
-	return 0;
+	struct spi_controller *controller = platform_get_drvdata(pdev);
+	device_remove_file(&controller->dev, &dev_attr_new_device);
+	device_remove_file(&controller->dev, &dev_attr_delete_device);
 }
 
 static struct platform_driver ch347_spi_driver = {
