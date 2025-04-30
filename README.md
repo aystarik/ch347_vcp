@@ -30,7 +30,7 @@ GPIO | PIN | UART0/1 | SPI | JTAG | I2C
 Driver adds new SPI master controller with speeds up to 60MHz and 2 slaves. If your setup does not support such frequencies (think "dupont" wires),
 decrease frequency when adding slave devices.
 
-To add a slave device you should send string containing device driver name, chip select number and optionally frequency into "new_device" file in sysfs directory of the driver.
+To add a slave device you should send string containing device driver name, SPI mode, bits per word, chip select number, and optionally frequency into "new_device" file in sysfs directory of the driver.
 ```
-echo "spi-nor 0 15000" > /sys/class/.../spi2/new_device
+echo "spi-nor 9 0 0 15000" > /sys/class/.../spi2/new_device
 ```
