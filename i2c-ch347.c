@@ -239,11 +239,13 @@ static int ch347_i2c_probe(struct platform_device *pdev)
 	return rv;
 }
 
-static void ch347_i2c_remove(struct platform_device *pdev)
+static int ch347_i2c_remove(struct platform_device *pdev)
 {
 	struct ch347_i2c *ch347 = platform_get_drvdata(pdev);
 
 	i2c_del_adapter(&ch347->adapter);
+
+	return 0;
 }
 
 static struct platform_driver ch347_i2c_driver = {

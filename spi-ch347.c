@@ -248,13 +248,25 @@ static int ch347_rdwr(struct ch347_spi *ch347, const u8 *tx_data, u8 *rx_data, u
 	return 0;
 }
 
+static void set_cs(struct ch347_spi *ch347, struct spi_device *spi, bool enable)
+{
+	if (!(spi->mode & SPI_NO_CS))
+		return;
+
+	if (spi->mode & SPI_CS_HIGH)
+		enable = !enable;
+
+	ch347_set_cs(ch347, spi->chip_select[0], enable);
+}
+
+
 static int ch347_transfer_one_message(struct spi_controller *controller, struct spi_message *m)
 {
 	struct ch347_spi *ch347 = spi_controller_get_devdata(controller);
 	struct spi_device *spi = m->spi;
 	struct spi_transfer *xfer = list_first_entry(&m->transfers, struct spi_transfer, transfer_list);
-	unsigned int cs_change = 1;
-	int rv;
+	bool keep_cs = false;
+	int rv = 0;
 
 	m->status = 0;
 	m->actual_length = 0;
@@ -270,15 +282,9 @@ static int ch347_transfer_one_message(struct spi_controller *controller, struct 
 		}
 	}
 
+	set_cs(ch347, spi, true);
+
 	list_for_each_entry(xfer, &m->transfers, transfer_list) {
-		if ((spi->mode & SPI_NO_CS) == 0) {
-			if (cs_change) {
-				ch347_set_cs(ch347, spi->chip_select[0], (spi->mode & SPI_CS_HIGH) ? false : true);
-			}
-
-			cs_change = xfer->cs_change;
-		}
-
 		rv = ch347_rdwr(ch347, xfer->tx_buf, xfer->rx_buf, xfer->len);
 		if (rv < 0) {
 			dev_err(&ch347->pdev->dev, "%s: Write/read failed: %d", __func__, rv);
@@ -287,16 +293,20 @@ static int ch347_transfer_one_message(struct spi_controller *controller, struct 
 		}
 		m->actual_length += xfer->len;
 
-		if (((spi->mode & SPI_NO_CS) == 0) && cs_change) {
-			ch347_set_cs(ch347, spi->chip_select[0], (spi->mode & SPI_CS_HIGH) ? true : false);
+		if (xfer->cs_change) {
+			if (list_is_last(&xfer->transfer_list, &m->transfers)) {
+				keep_cs = true;
+			} else {
+				// toggle CS
+				set_cs(ch347, spi, false);
+				set_cs(ch347, spi, true);
+			}
 		}
 	}
 
-	if (((spi->mode & SPI_NO_CS) == 0) && !cs_change) {
-		ch347_set_cs(ch347, spi->chip_select[0], (spi->mode & SPI_CS_HIGH) ? true : false);
-	}
-
 msg_done:
+	if (rv < 0 || !keep_cs)
+		set_cs(ch347, spi, false);
 	mutex_unlock(&ch347->io_mutex);
 	spi_finalize_current_message(controller);
 	return 0;
@@ -499,11 +509,13 @@ static int ch347_spi_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void ch347_spi_remove(struct platform_device *pdev)
+static int ch347_spi_remove(struct platform_device *pdev)
 {
 	struct spi_controller *controller = platform_get_drvdata(pdev);
 	device_remove_file(&controller->dev, &dev_attr_new_device);
 	device_remove_file(&controller->dev, &dev_attr_delete_device);
+
+	return 0;
 }
 
 static struct platform_driver ch347_spi_driver = {
