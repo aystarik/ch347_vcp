@@ -509,13 +509,11 @@ static int ch347_spi_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int ch347_spi_remove(struct platform_device *pdev)
+static void ch347_spi_remove(struct platform_device *pdev)
 {
 	struct spi_controller *controller = platform_get_drvdata(pdev);
 	device_remove_file(&controller->dev, &dev_attr_new_device);
 	device_remove_file(&controller->dev, &dev_attr_delete_device);
-
-	return 0;
 }
 
 static struct platform_driver ch347_spi_driver = {

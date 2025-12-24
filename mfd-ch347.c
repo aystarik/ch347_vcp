@@ -623,21 +623,23 @@ static void ch347_disconnect(struct usb_interface *interface)
 static int ch347_probe(struct usb_interface *interface, const struct usb_device_id *usb_id)
 {
 	struct usb_host_interface *hostif = interface->cur_altsetting;
-	struct usb_endpoint_descriptor *epin;
-	struct usb_endpoint_descriptor *epout;
+	struct usb_endpoint_descriptor *ep = NULL, *epin = NULL, *epout = NULL;
 	struct device *dev = &interface->dev;
 	struct ch347_dev *ch347;
-	int ret;
+	int ret, i;
 
-	if (hostif->desc.bInterfaceNumber != 2 ||
-	    hostif->desc.bNumEndpoints < 2)
+	if (hostif->desc.bInterfaceClass != 255)
 		return -ENODEV;
 
-	epout = &hostif->endpoint[0].desc;
-	if (!usb_endpoint_is_bulk_out(epout))
-		return -ENODEV;
-	epin = &hostif->endpoint[1].desc;
-	if (!usb_endpoint_is_bulk_in(epin))
+	for (i = 0; i != hostif->desc.bNumEndpoints; ++i) {
+		ep = &hostif->endpoint[i].desc;
+		if (usb_endpoint_is_bulk_out(ep))
+			epout = ep;
+		else if (usb_endpoint_is_bulk_in(ep))
+			epin = ep;
+	}
+
+	if (epout == NULL || epin == NULL)
 		return -ENODEV;
 
 	ch347 = kzalloc(sizeof(*ch347), GFP_KERNEL);
