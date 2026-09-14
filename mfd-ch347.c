@@ -679,6 +679,7 @@ static int ch347_probe(struct usb_interface *interface, const struct usb_device_
 		(ch347->mode == CH347_MODE_3) ? 2 : 3);
 	if (ret != 0) {
 		dev_err(dev, "%s: Failed to add MFD devices to core: %d", __func__, ret);
+		mfd_remove_devices(dev);
 		goto out_free;
 	}
 
