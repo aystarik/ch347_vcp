@@ -473,7 +473,7 @@ static int ch347_spi_probe(struct platform_device *pdev)
 	rv = ch347_get_hw_config(ch347);
 	if (rv < 0) {
 		dev_err(dev, "%s: Failed to get SPI configuration: %d", __func__, rv);
-		return rv;
+		goto out_free;
 	}
 
 	if (num_cs != 1 && num_cs != 2) {
@@ -492,21 +492,36 @@ static int ch347_spi_probe(struct platform_device *pdev)
 
 	controller->transfer_one_message = ch347_transfer_one_message;
 
-	rv = devm_spi_register_controller(dev, controller);
+	rv = spi_register_controller(controller);
 	if (rv < 0)
-		return rv;
+		goto out_free;
+
 	rv = device_create_file(&controller->dev, &dev_attr_new_device);
 	if (rv) {
 		dev_err(dev, "%s: Can not create 'new_device' file: %d", __func__, rv);
-		return rv;
+		goto out_unregister;
 	}
+
 	rv = device_create_file(&controller->dev, &dev_attr_delete_device);
 	if (rv) {
 		dev_err(dev, "%s: Can not create 'delete_device' file: %d", __func__, rv);
-		return rv;
+		goto out_remove_new;
 	}
 
 	return 0;
+
+out_remove_new:
+	device_remove_file(&controller->dev, &dev_attr_new_device);
+out_unregister:
+	/*
+	 * spi_unregister_controller() drops the reference taken by
+	 * spi_alloc_host(), so the controller is gone after this point.
+	 */
+	spi_unregister_controller(controller);
+	return rv;
+out_free:
+	spi_controller_put(controller);
+	return rv;
 }
 
 static void ch347_spi_remove(struct platform_device *pdev)
@@ -514,6 +529,7 @@ static void ch347_spi_remove(struct platform_device *pdev)
 	struct spi_controller *controller = platform_get_drvdata(pdev);
 	device_remove_file(&controller->dev, &dev_attr_new_device);
 	device_remove_file(&controller->dev, &dev_attr_delete_device);
+	spi_unregister_controller(controller);
 }
 
 static struct platform_driver ch347_spi_driver = {
