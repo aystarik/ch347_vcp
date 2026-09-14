@@ -426,48 +426,46 @@ static int ch347_data_xfer(
 	}
 
 	mutex_lock(&ch347->io_mutex);
-	{
-		if (!ch347->interface) {
+	if (!ch347->interface) {
+		mutex_unlock(&ch347->io_mutex);
+		retval = -ENODEV;
+		goto error;
+	}
+
+	if (ibuf) {
+		/* Submit RX URB */
+		retval = usb_submit_urb(rxb->urb->urb, GFP_KERNEL);
+		if (retval) {
 			mutex_unlock(&ch347->io_mutex);
-			retval = -ENODEV;
+			dev_err(&ch347->interface->dev,
+				"%s: Failed submitting read URB: %d", __func__, retval);
 			goto error;
 		}
 
-		if (ibuf) {
-			/* Submit RX URB */
-			retval = usb_submit_urb(rxb->urb->urb, GFP_KERNEL);
-			if (retval) {
-				mutex_unlock(&ch347->io_mutex);
-				dev_err(&ch347->interface->dev,
-					"%s: Failed submitting read URB: %d", __func__, retval);
-				goto error;
-			}
+		dev_dbg(&ch347->interface->dev,
+			"%s: Submitted read URB (len = %u, context = 0x%p): %d",
+			__func__, ibuf_len, rxb, retval);
+	}
 
-			dev_dbg(&ch347->interface->dev,
-				"%s: Submitted read URB (len = %u, context = 0x%p): %d",
-				__func__, ibuf_len, rxb, retval);
+	if (obuf) {
+		/* Submit TX URB */
+		usb_anchor_urb(txb->urb->urb, &ch347->submitted);
+
+		/* send the data out the bulk port */
+		retval = usb_submit_urb(txb->urb->urb, GFP_KERNEL);
+		if (retval) {
+			mutex_unlock(&ch347->io_mutex);
+			dev_err(&ch347->interface->dev,
+				"%s: Failed submitting write URB: %d", __func__, retval);
+			usb_unanchor_urb(txb->urb->urb);
+			goto error;
 		}
 
-		if (obuf) {
-			/* Submit TX URB */
-			usb_anchor_urb(txb->urb->urb, &ch347->submitted);
+		dev_dbg(&ch347->interface->dev,
+			"%s: Submitted write URB (len = %u): %d", __func__, obuf_len, retval);
 
-			/* send the data out the bulk port */
-			retval = usb_submit_urb(txb->urb->urb, GFP_KERNEL);
-			if (retval) {
-				mutex_unlock(&ch347->io_mutex);
-				dev_err(&ch347->interface->dev,
-					"%s: Failed submitting write URB: %d", __func__, retval);
-				goto error_unanchor;
-			}
-
-			dev_dbg(&ch347->interface->dev,
-				"%s: Submitted write URB (len = %u): %d", __func__, obuf_len, retval);
-
-			retval = obuf_len;
-		} /* obuf */
-	}
-	mutex_unlock(&ch347->io_mutex);
+		retval = obuf_len;
+	} /* obuf */
 
 	if (rxb) {
 		retval = -ETIMEDOUT;
@@ -484,19 +482,25 @@ static int ch347_data_xfer(
 				__func__, ibuf_len, retval);
 			usb_kill_urb(rxb->urb->urb);
 			ch347_put_rx_buffer(ch347, rxb);
-			goto exit;
+			rxb = NULL;
+			retval = -ETIMEDOUT;
+		} else {
+			ch347_put_rx_buffer(ch347, rxb);
+			rxb = NULL;
+			retval = bytes_read;
 		}
-
-		ch347_put_rx_buffer(ch347, rxb);
-
-		retval = bytes_read;
 	} /* ibuf */
+
+	/* Return the submitted TX buffer once the transfer is fully done */
+	if (obuf && txb) {
+		ch347_put_tx_buffer(ch347, txb);
+		txb = NULL;
+	}
+
+	mutex_unlock(&ch347->io_mutex);
 
 	return retval;
 
-error_unanchor:
-	if (obuf && txb)
-		usb_unanchor_urb(txb->urb->urb);
 error:
 	if (obuf && txb) {
 		usb_kill_urb(txb->urb->urb);
