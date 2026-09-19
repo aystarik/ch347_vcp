@@ -40,6 +40,8 @@ struct ch347_i2c {
 	struct i2c_adapter adapter;
 	struct mutex io_mutex;
 
+	int speed_last;		/* last speed programmed into this device, -1 = none */
+
 	uint8_t ibuf[CH347_I2C_BUF_SIZE];
 	uint8_t obuf[CH347_I2C_BUF_SIZE];
 };
@@ -136,14 +138,13 @@ static int speed = CH347_I2C_STANDARD_SPEED; // module parameter speed, default 
 
 static int ch347_i2c_set_speed(struct ch347_i2c *dev) {
 	int rv;
-	static int speed_last	= -1;
 	static char* i2c_speed_desc[] = { "20 kbps", "100 kbps", "400 kbps", "750 kbps" };
-	if (speed == speed_last)
+	if (speed == dev->speed_last)
 		return 0;
 	if (speed < CH347_I2C_LOW_SPEED || speed > CH347_I2C_HIGH_SPEED)
 	{
 		dev_err(&dev->pdev->dev, "%s: Parameter speed can only have values from 0 to 3", __func__);
-		speed = speed_last;
+		speed = dev->speed_last;
 		return -EINVAL;
 	}
 	dev_info(&dev->pdev->dev, "Change I2C bus speed to %s", i2c_speed_desc[speed]);
@@ -155,7 +156,7 @@ static int ch347_i2c_set_speed(struct ch347_i2c *dev) {
 	if (rv < 0)
 		return rv;
 
-	speed_last = speed;
+	dev->speed_last = speed;
 	return 0;
 }
 
@@ -217,6 +218,7 @@ static int ch347_i2c_probe(struct platform_device *pdev)
 	if (!ch347)
 		return -ENOMEM;
 	ch347->pdev = pdev;
+	ch347->speed_last = -1;	/* nothing programmed into the device yet */
 	ch347->adapter.owner = THIS_MODULE;
 	ch347->adapter.class = I2C_CLASS_HWMON;
 	ch347->adapter.algo = &ch347_i2c_usb_algorithm;
