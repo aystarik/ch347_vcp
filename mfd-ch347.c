@@ -276,12 +276,16 @@ static void ch347_draw_down(struct ch347_dev *ch347);
 
 static void ch347_free(struct ch347_dev *ch347)
 {
+	/*
+	 * Keep io_mutex across the teardown: a transfer that already passed the
+	 * interface check must not still be able to touch the URBs and buffer
+	 * pools while they are being released.
+	 */
 	mutex_lock(&ch347->io_mutex);
 	ch347->interface = NULL;
-	mutex_unlock(&ch347->io_mutex);
-
 	ch347_draw_down(ch347);
 	ch347_free_buffers(ch347);
+	mutex_unlock(&ch347->io_mutex);
 
 	usb_put_dev(ch347->usb_dev);
 	kfree(ch347);
