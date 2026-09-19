@@ -296,7 +296,7 @@ static void ch347_write_bulk_callback(struct urb *urb)
 	struct ch347_tx_buffer *txb = urb->context;
 	struct ch347_dev *ch347 = txb->ch347;
 
-	dev_dbg(&ch347->interface->dev,
+	dev_dbg(&ch347->usb_dev->dev,
 		"%s: Write URB callback (len = %u, actual_len = %u)",
 		__func__, urb->transfer_buffer_length, urb->actual_length);
 
@@ -305,7 +305,7 @@ static void ch347_write_bulk_callback(struct urb *urb)
 		if (!(urb->status == -ENOENT ||
 		      urb->status == -ECONNRESET ||
 		      urb->status == -ESHUTDOWN)) {
-			dev_err(&ch347->interface->dev,
+			dev_err(&ch347->usb_dev->dev,
 				"%s: Nonzero write bulk status received: %d",
 				__func__, urb->status);
 		}
@@ -328,7 +328,7 @@ static void ch347_read_bulk_callback(struct urb *urb)
 	struct ch347_rx_buffer *rxb = urb->context;
 	struct ch347_dev *ch347 = rxb->ch347;
 
-	dev_dbg(&ch347->interface->dev,
+	dev_dbg(&ch347->usb_dev->dev,
 		"%s: Received read URB (status = %d, len = %u, actual_len = %u, context = 0x%p)",
 		__func__, urb->status, rxb->length, urb->actual_length, rxb);
 
@@ -340,7 +340,7 @@ static void ch347_read_bulk_callback(struct urb *urb)
 		if (!(urb->status == -ENOENT ||
 		      urb->status == -ECONNRESET ||
 		      urb->status == -ESHUTDOWN)) {
-			dev_err(&ch347->interface->dev,
+			dev_err(&ch347->usb_dev->dev,
 				"%s: Nonzero read bulk status received: %d",
 				__func__, urb->status);
 		}
@@ -355,12 +355,12 @@ static void ch347_read_bulk_callback(struct urb *urb)
 
 			err = usb_submit_urb(urb, GFP_ATOMIC);
 			if (err < 0) {
-				dev_err(&ch347->interface->dev,
+				dev_err(&ch347->usb_dev->dev,
 					"Failed to resubmit read URB: %d", err);
 				return;
 			}
 
-			dev_dbg(&ch347->interface->dev,
+			dev_dbg(&ch347->usb_dev->dev,
 				"%s: Resubmitted read URB (context = 0x%p)", __func__, rxb);
 			return;
 		}
@@ -451,12 +451,12 @@ static int ch347_data_xfer(
 		retval = usb_submit_urb(rxb->urb->urb, GFP_KERNEL);
 		if (retval) {
 			mutex_unlock(&ch347->io_mutex);
-			dev_err(&ch347->interface->dev,
+			dev_err(&ch347->usb_dev->dev,
 				"%s: Failed submitting read URB: %d", __func__, retval);
 			goto error;
 		}
 
-		dev_dbg(&ch347->interface->dev,
+		dev_dbg(&ch347->usb_dev->dev,
 			"%s: Submitted read URB (len = %u, context = 0x%p): %d",
 			__func__, ibuf_len, rxb, retval);
 	}
@@ -469,13 +469,13 @@ static int ch347_data_xfer(
 		retval = usb_submit_urb(txb->urb->urb, GFP_KERNEL);
 		if (retval) {
 			mutex_unlock(&ch347->io_mutex);
-			dev_err(&ch347->interface->dev,
+			dev_err(&ch347->usb_dev->dev,
 				"%s: Failed submitting write URB: %d", __func__, retval);
 			usb_unanchor_urb(txb->urb->urb);
 			goto error;
 		}
 
-		dev_dbg(&ch347->interface->dev,
+		dev_dbg(&ch347->usb_dev->dev,
 			"%s: Submitted write URB (len = %u): %d", __func__, obuf_len, retval);
 
 		retval = obuf_len;
@@ -491,7 +491,7 @@ static int ch347_data_xfer(
 			memcpy(ibuf, rxb->urb->buf_dma, bytes_read);
 
 		if (retval) {
-			dev_dbg(&ch347->interface->dev,
+			dev_dbg(&ch347->usb_dev->dev,
 				"%s: Failed to receive data (len = %u): %d",
 				__func__, ibuf_len, retval);
 			usb_kill_urb(rxb->urb->urb);
@@ -529,7 +529,7 @@ int ch347_xfer(struct platform_device *pdev,
 	int retval;
 	struct ch347_dev *ch347 = dev_get_drvdata(pdev->dev.parent);
 
-	dev_dbg(&ch347->interface->dev,
+	dev_dbg(&ch347->usb_dev->dev,
 		"%s: obuf = %p, obuf_len = %u, ibuf = %p, ibuf_len = %u",
 		__func__, obuf, obuf_len, ibuf, ibuf_len);
 	retval = ch347_data_xfer(ch347, obuf, obuf_len,
@@ -583,7 +583,7 @@ static int ch347_fixup_startup(struct ch347_dev *ch347) {
 		ret = 0;
 	}
 	else if (ret >= 0) {
-		dev_warn(&ch347->interface->dev, "Unexpectedly readed %u bytes", ret);
+		dev_warn(&ch347->usb_dev->dev, "Unexpectedly readed %u bytes", ret);
 		ret = 0;
 	}
 	else {
@@ -627,6 +627,7 @@ static void ch347_disconnect(struct usb_interface *interface)
 
 	ch347_draw_down(ch347);
 	mfd_remove_devices(&interface->dev);
+	usb_set_intfdata(interface, NULL);
 	ch347_free(ch347);
 
 	dev_info(&interface->dev, "CH347 disconnected");
@@ -697,6 +698,7 @@ static int ch347_probe(struct usb_interface *interface, const struct usb_device_
 	return 0;
 
 out_free:
+	usb_set_intfdata(interface, NULL);
 	ch347_free(ch347);
 	return ret;
 }
@@ -720,6 +722,9 @@ static int ch347_pre_reset(struct usb_interface *intf)
 {
 	struct ch347_dev *ch347 = usb_get_intfdata(intf);
 
+	if (!ch347)
+		return 0;
+
 	mutex_lock(&ch347->io_mutex);
 	ch347_draw_down(ch347);
 
@@ -729,8 +734,14 @@ static int ch347_pre_reset(struct usb_interface *intf)
 static int ch347_post_reset(struct usb_interface *intf)
 {
 	struct ch347_dev *ch347 = usb_get_intfdata(intf);
+	unsigned long flags;
 
+	if (!ch347)
+		return 0;
+
+	spin_lock_irqsave(&ch347->err_lock, flags);
 	ch347->errors = -EPIPE;
+	spin_unlock_irqrestore(&ch347->err_lock, flags);
 	mutex_unlock(&ch347->io_mutex);
 	return 0;
 }
