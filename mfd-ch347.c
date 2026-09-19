@@ -139,6 +139,10 @@ static void ch347_urb_free(struct ch347_dev *ch347, struct ch347_urb *urb)
 	kfree(urb);
 }
 
+/*
+ * Must be idempotent: it is reached both from ch347_init_buffers()'s error
+ * path and from ch347_free(), so every slot is cleared as it is released.
+ */
 static void ch347_free_buffers(struct ch347_dev *ch347)
 {
 	int i;
@@ -146,12 +150,14 @@ static void ch347_free_buffers(struct ch347_dev *ch347)
 	for (i = 0; i < CH347_RX_BUFFERS; ++i) {
 		if (ch347->rxb[i].urb) {
 			ch347_urb_free(ch347, ch347->rxb[i].urb);
+			ch347->rxb[i].urb = NULL;
 		}
 	}
 
 	for (i = 0; i < CH347_TX_BUFFERS; ++i) {
 		if (ch347->txb[i].urb) {
 			ch347_urb_free(ch347, ch347->txb[i].urb);
+			ch347->txb[i].urb = NULL;
 		}
 	}
 }
@@ -162,7 +168,7 @@ static int ch347_init_buffers(struct ch347_dev *ch347)
 	int retval = 0;
 
 	sema_init(&ch347->rx_limit_sem, CH347_RX_BUFFERS);
-	sema_init(&ch347->tx_limit_sem, CH347_RX_BUFFERS);
+	sema_init(&ch347->tx_limit_sem, CH347_TX_BUFFERS);
 	spin_lock_init(&ch347->rxb_lock);
 	spin_lock_init(&ch347->txb_lock);
 
@@ -654,7 +660,6 @@ static int ch347_probe(struct usb_interface *interface, const struct usb_device_
 	ch347->interface = interface;
 
 	mutex_init(&ch347->io_mutex);
-	sema_init(&ch347->tx_limit_sem, CH347_TX_BUFFERS);
 	init_usb_anchor(&ch347->submitted);
 	spin_lock_init(&ch347->err_lock);
 
