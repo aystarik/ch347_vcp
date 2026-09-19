@@ -163,12 +163,12 @@ static int ch347_transfer_setup(struct ch347_spi *ch347, u32 speed, u8 mode) {
 
 	if (ch347->ibuf[0] != 0xc0 || ch347->ibuf[3]) {
 		dev_err(&ch347->pdev->dev, "%s: ibuf[0]=%x, ibuf[3]=%d", __func__, ch347->ibuf[0], ch347->ibuf[3]);
-		return -1;
+		return -EIO;
 	}
 	return 0;
 }
 
-static int ch347_spi_write(struct ch347_spi *ch347, const u8 *tx_data, u16 data_len)
+static int ch347_spi_write(struct ch347_spi *ch347, const u8 *tx_data, u32 data_len)
 {
 	int rv;
 	unsigned len, remaining = data_len, offset;
@@ -250,7 +250,16 @@ static int ch347_rdwr(struct ch347_spi *ch347, const u8 *tx_data, u8 *rx_data, u
 
 static void set_cs(struct ch347_spi *ch347, struct spi_device *spi, bool enable)
 {
-	if (!(spi->mode & SPI_NO_CS))
+	/*
+	 * SPI_NO_CS means the device has no chip-select line at all, and the
+	 * CH347 only needs the driver to drive CS when it is configured for
+	 * software NSS - with hardware NSS the controller toggles CS itself.
+	 * The previous test was inverted: it returned for every normal device
+	 * (so CS was never driven) and only drove CS for no-CS devices.
+	 */
+	if (spi->mode & SPI_NO_CS)
+		return;
+	if (!(ch347->cfg.nss & SPI_NSS_SOFTWARE))
 		return;
 
 	if (spi->mode & SPI_CS_HIGH)
