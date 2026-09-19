@@ -68,21 +68,26 @@ static int ch347_i2c_read(struct ch347_i2c *ch347, struct i2c_msg *msg)
 
 		ret = ch347_xfer(ch347->pdev, ch347->obuf, ptr - ch347->obuf,
 			ch347->ibuf, bytestoread + 1);
-		if (ret > 0) {
-			if (ret != bytestoread + 1)
-				ret = -1;
-			if (ch347->ibuf[0] != 1)
-				ret = -ETIMEDOUT;
-			if (ret > -1) {
-				memcpy(&msg->buf[byteoffset], &ch347->ibuf[1], bytestoread);
-				byteoffset += bytestoread;
-			}
-		}
-
-		if (ret < 0)
+		if (ret <= 0)
 			break;
+		if (ret != bytestoread + 1) {
+			ret = -EIO;
+			break;
+		}
+		if (ch347->ibuf[0] != 1) {
+			ret = -ETIMEDOUT;
+			break;
+		}
+		memcpy(&msg->buf[byteoffset], &ch347->ibuf[1], bytestoread);
+		byteoffset += bytestoread;
 	}
-	return ret;
+
+	/*
+	 * Return the number of bytes copied into msg->buf, not the raw transfer
+	 * result: the device also reports one status byte per chunk, and the
+	 * caller stores this value in msgs[i].len.
+	 */
+	return ret < 0 ? ret : byteoffset;
 }
 
 static int ch347_i2c_write(struct ch347_i2c *ch347, struct i2c_msg *msg) {
