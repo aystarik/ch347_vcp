@@ -23,6 +23,20 @@
 #define GPIO_LINE_DIRECTION_OUT	0
 #endif
 
+/*
+ * gpio_chip.set()/set_multiple() returned void before 6.16 and return an int
+ * from 6.16 on ("gpiolib: indicate errors in value setters"), so the setters
+ * below need a version-dependent signature. CH347_GPIO_SET_FN() supplies the
+ * return type and CH347_GPIO_SET_DONE() performs the matching return.
+ */
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0))
+#define CH347_GPIO_SET_FN(fn)		int fn
+#define CH347_GPIO_SET_DONE(rc)		return (rc)
+#else
+#define CH347_GPIO_SET_FN(fn)		void fn
+#define CH347_GPIO_SET_DONE(rc)		do { (void)(rc); return; } while (0)
+#endif
+
 #define CH347_GPIO_NUM_PINS	8
 
 struct ch347_gpio {
@@ -37,8 +51,23 @@ static void ch347_gpio_dbg_show(struct seq_file *s, struct gpio_chip *chip)
 {
 	unsigned i;
 	struct ch347_gpio *ch347 = gpiochip_get_data(chip);
+	u8 pins[8];
+
+	/*
+	 * The cached state is refreshed by the get/set/direction paths. This
+	 * callback has no context guarantee, so only read the cache when the
+	 * lock is free (mutex_trylock() never sleeps) and never start a
+	 * transfer from here.
+	 */
+	if (!mutex_trylock(&ch347->lock)) {
+		seq_puts(s, "gpio state busy\n");
+		return;
+	}
+	memcpy(pins, ch347->ibuf + 3, sizeof(pins));
+	mutex_unlock(&ch347->lock);
+
 	for (i = 0; i < 8; ++i) {
-		u8 pin = ch347->ibuf[3 + i];
+		u8 pin = pins[i];
 		seq_printf(s, "gpio-%-1d-%s %s\n", i, pin & 0x80 ? "out":"in ", pin & 0x40 ? "hi" : "lo");
 	}
 }
@@ -112,10 +141,14 @@ static int ch347_gpio_get_multiple(struct gpio_chip *chip, unsigned long *mask, 
 	return 0;
 }
 
-static void ch347_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
+static CH347_GPIO_SET_FN(ch347_gpio_set)(struct gpio_chip *chip, unsigned int offset, int value)
 {
 	struct ch347_gpio *ch347 = gpiochip_get_data(chip);
-	if (offset > 7) return;
+	int rc;
+
+	if (offset > 7)
+		CH347_GPIO_SET_DONE(0);
+
 	mutex_lock(&ch347->lock);
 	gpio_refresh(ch347); // make sure cached direction is current
 	memset(ch347->obuf + 3, 0, 8); // clear all pins
@@ -126,14 +159,18 @@ static void ch347_gpio_set(struct gpio_chip *chip, unsigned int offset, int valu
 	if (value) {
 		ch347->obuf[3 + offset] |= 0x08;
 	}
-	gpio_transfer(ch347);
+	rc = gpio_transfer(ch347);
 	mutex_unlock(&ch347->lock);
+
+	CH347_GPIO_SET_DONE(rc < 0 ? -EIO : 0);
 }
 
-static void ch347_gpio_set_multiple(struct gpio_chip *chip, unsigned long *mask, unsigned long *bits)
+static CH347_GPIO_SET_FN(ch347_gpio_set_multiple)(struct gpio_chip *chip, unsigned long *mask, unsigned long *bits)
 {
 	unsigned i;
 	struct ch347_gpio *ch347 = gpiochip_get_data(chip);
+	int rc;
+
 	mutex_lock(&ch347->lock);
 	gpio_refresh(ch347); // make sure cached directions are current
 	memset(ch347->obuf + 3, 0, 8); // clear all pins
@@ -145,8 +182,10 @@ static void ch347_gpio_set_multiple(struct gpio_chip *chip, unsigned long *mask,
 			}
 		}
 	}
-	gpio_transfer(ch347);
+	rc = gpio_transfer(ch347);
 	mutex_unlock(&ch347->lock);
+
+	CH347_GPIO_SET_DONE(rc < 0 ? -EIO : 0);
 }
 
 static int ch347_gpio_direction_input(struct gpio_chip *chip, unsigned int offset)
@@ -177,7 +216,7 @@ static int ch347_gpio_direction_output(struct gpio_chip *chip, unsigned int offs
 	gpio_refresh(ch347); // make sure cached value is current
 	memset(3 + ch347->obuf, 0, 8); // clear all pins
 	ch347->obuf[3 + offset] |= 0xf0; // enable pin change & output
-	if (ch347->ibuf[3 + offset] & 0x40) { // copy value
+	if (value) { // drive the requested level, not the cached one
 		ch347->obuf[3 + offset] |= 0x08;
 	}
 
